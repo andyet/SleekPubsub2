@@ -1,0 +1,36 @@
+subscribe
+    hset xmpp.subs.jid.{node} [subid] [jid]
+    //if sub config
+        hset xmpp.subs.config.{node} [subid] [config]
+    hset xmpp.jid.subs.{jid} [subid] [node]
+
+unsubscribe
+    hdel xmpp.subs.jid.{node} [subid]
+    hdel xmpp.subs.config.{node} [subid]
+    hdel xmpp.jid.subs.{jid} [subid]
+
+set affilation (owner, publisher, publisher-only, member, none, outcast)
+    sadd xmpp.affiliation.{affilation}.{node} [jid]
+
+rem affilation:
+    srem xmpp.affiliation.{affiliation}.{node} [jid]
+
+delete node:
+    del xmpp.subs.jid.{node}
+    del xmpp.subs.config.{node}
+    del xmpp.affilation.owner.{node}
+    del xmpp.affilation.publisher.{node}
+    del xmpp.affilation.publisher-only.{node}
+    del xmpp.affilation.member.{node}
+    del xmpp.affilation.none.{node}
+    del xmpp.affilation.outcast.{node}
+    
+set xmpp admin:
+    sadd xmpp.admin [jid]
+
+rem xmpp admin:
+    srem xmpp.admin [jid]
+
+add whitelist:
+    sadd xmpp
+    
