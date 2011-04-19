@@ -2,12 +2,16 @@ subscribe
     hset xmpp.subs.jid.{node} [subid] [jid]
     //if sub config
         hset xmpp.subs.config.{node} [subid] [config]
-    hset xmpp.jid.subs.{jid} [subid] [node]
+    sadd xmpp.jid.subs.{jid} [subid]\x00[node]
+
+pending
+    sadd xmpp.pending.{node} [jid]
 
 unsubscribe
     hdel xmpp.subs.jid.{node} [subid]
     hdel xmpp.subs.config.{node} [subid]
-    hdel xmpp.jid.subs.{jid} [subid]
+    sdel xmpp.jid.subs.{jid} [node]\x00[subid]
+    sdel xmpp.sub_expires.{jid} [node]\x00[subid]
 
 set affilation (owner, publisher, publisher-only, member, none, outcast)
     sadd xmpp.affiliation.{affilation}.{node} [jid]
@@ -16,6 +20,9 @@ rem affilation:
     srem xmpp.affiliation.{affiliation}.{node} [jid]
 
 delete node:
+    //for each sub
+      sdel xmpp.jid.subs.{jid} [subid]
+      sdel xmpp.sub_expires.{jid} [node]\x00[subid]
     del xmpp.subs.jid.{node}
     del xmpp.subs.config.{node}
     del xmpp.affilation.owner.{node}
@@ -24,6 +31,7 @@ delete node:
     del xmpp.affilation.member.{node}
     del xmpp.affilation.none.{node}
     del xmpp.affilation.outcast.{node}
+    del xmpp.whitelist.{node}
     
 set xmpp admin:
     sadd xmpp.admin [jid]
@@ -32,5 +40,7 @@ rem xmpp admin:
     srem xmpp.admin [jid]
 
 add whitelist:
-    sadd xmpp
-    
+    sadd xmpp.whitelist.{node} [jid]
+
+add expire subscription
+    sadd xmpp.sub_expires.{jid} [node]\x00[subid]

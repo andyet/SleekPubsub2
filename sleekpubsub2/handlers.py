@@ -12,6 +12,7 @@ class SleekPubsub2(object):
         self.xmpp = xmpp
         self.thoonk = thoonk
         self.default_config = default_config
+        self.redis = thoonk.redis
 		
 		self.xmpp.registerHandler(Callback('pubsub create', StanzaPath("iq@type=set/pubsub/create"), self.handleCreateNode)) 
 		self.xmpp.registerHandler(Callback('pubsub configure', StanzaPath("iq@type=set/pubsub_owner/configure"), self.handleConfigureNode))
@@ -36,8 +37,13 @@ class SleekPubsub2(object):
             "returns xmpp config dict"
             pass
 
-        def handleGotOffline(self, node, config):
-            pass
+        def handleGotOffline(self, presence):
+            subs = self.redis.smembers('xmpp.sub_expires.{%s}' % presence['from'].full)
+            subs += self.redis.smembers('xmpp.sub_expires.{%s}' % presence['from'].bare)
+            if subs:
+                for sub in subs:
+                    node, subid = sub.split('\x00')
+                    self.unsubscribe(node, subid)
 
         def handleCreateNode(self, iq):
             pass
@@ -66,21 +72,67 @@ class SleekPubsub2(object):
         def is_admin(self, jid):
             pass
 
-        def is_affiliation(self, jid, affiliations, node):
+        def is_affiliation(self, node, jid, affiliations):
+            pass
+
+        def is_pending(self, node, jid):
+            pass
+
+        def add_pending(self, node, jid):
+            pass
+        
+        def rem_pending(self, node, jid):
+            pass
+
+        def send_auth_request(self, node, subscriber):
+            #where jid is the subscribing jid
+            pass
+
+        def node_exists(self, node):
+            pass
+
+        def get_subid(self, node, jid):
+            pass
+
+        def subscribe(self, node, jid, config, node_config):
+            if config.get('pubsub#expire', '') == 'presence' or node_config.get('pubsub#expire', '') == 'presence':
+                self.redis.sadd('xmpp.sub_expires.{%s}' % jid, "%s\x00%s" % (node, subid))
+            self.redis.hset('xmpp.subs.jid.{%s}' % node, subid, jid)
+            if config:
+                self.redis.hset('xmpp.subs.config.{%s}' % node, subid, json.sdump(config))
+            self.redis.sadd('xmpp.jid.subs.{jid}', '%s\x00%s' % (subid, node))
+
+        def unsubscribe(self, node, subid=None, sjid=None, fjid='__internal__'):
+            jid = self.redis.hget('xmpp.subs.jid.{%s}' % node, subid)
+            if not jid:
+                pass #raise
+            if fjid == '__internal__':
+                pass
+            elif self.is_admin(fjid) or self.is_affiliation(node, fjid, 'owner'):
+                pass
+            elif fjid.full != jid and fjid.bare != jid:
+                pass #raise
+            self.redis.hdel('xmpp.subs.jid.{%s}' % node, subid)
+            self.redis.hdel('xmpp.subs.config.{%s}' % node, subid)
+            self.redis.sdel('xmp.jid.subs.{%s}' % jid, '%s\x00%s' % (node, subid))
+            self.redis.sdel('xmpp.sub_expires.{%s}' % jid, "%s\x00%s" % (node, subid))
+
+        def can_unsubscribe():
             pass
 
         def can_subscribe(self, iq, fjid, node, sjid, config):
-            if self.is_admin(fjid) or self.is_affiliation(fjid, 'owner', node):
+            if self.is_admin(fjid) or self.is_affiliation(node, fjid, 'owner'):
+                self.rem_pending(node, sjid) #no longer pending, cause the admin/owner says
                 return 'subscribed'
+            elif self.is_pending(node, sjid):
+                raise XMPPError(condition='not-authorized', etype='auth', extension='pending-subscription', extension_ns='http://jabber.org/protocol/pubsub#errors')
+                #TODO: send another auth request?
             elif (fjid != sjid and fjid != sjid.bare):
-                iq.reply()
-                iq.clear()
-                iq['error']['condition'] = 'bad-request'
-                iq['error']['type'] = 'modify'
-                iq['error'].xml.append(ET('{http://jabber.org/protocol/pubsub#errors}invalid-jid'))
-                iq.send()
+                raise XMPPError(condition='bad-request', etype='modify', extension='invalid-jid', extension_ns='http://jabber.org/protocol/pubsub#errors')
+            elif is_affiliation(node, sjid, 'outcast'):
+                raise XMPPError(condition='forbidden', etype='auth')
             else:
-                am = self.thoonk[node].config.get('pubsub#access_model', 'open')
+                am = node_config.get('pubsub#access_model', 'open')
                 if am == 'open':
                     return 'subscribed'
                 elif am == 'presence':
@@ -88,33 +140,29 @@ class SleekPubsub2(object):
                     if self.xmpp.roster[iq['to'].bare].has_jid(fjid.bare) and self.xmpp.roster[iq['to'].bare][fjid.bare]['to']:
                         return 'subscribed'
                     else:
-                        iq.reply()
-                        iq.clear()
-                        iq['error']['condition'] = 'not-authorized'
-                        iq['error']['type'] = 'auth'
-                        iq['error'].xml.append(ET('{http://jabber.org/protocol/pubsub#errors}presence-subscription-required'))
-                        iq.send()
+                        raise XMPPError(condition='not-authorized', etype='auth', extension='presence-subscription-required', extension_ns='http://jabber.org/protocol/pubsub#errors')
                 elif am == 'roster':
                     #is in the roster and authorized and in one of the roster groups allowed?
                     if self.xmpp.roster[iq['to'].bare].has_jid(fjid.bare) and self.xmpp.roster[iq['to'].bare][fjid.bare]['to'] and set(self.xmpp.roster[iq['to'].bare][fjid.bare]['groups']).intersect(set(self.thoonk[node].config['pubsub#roster_groups_allowed'])):
                         return 'subscribed'
                     else:
-                        iq.reply()
-                        iq.clear()
-                        iq['error']['condition'] = 'not-authorized'
-                        iq['error']['type'] = 'auth'
-                        iq['error'].xml.append(ET('{http://jabber.org/protocol/pubsub#errors}not-in-roster-group'))
-                        iq.send()
+                        raise XMPPError(condition='not-authorized', etype='auth', extension='not-in-roster-group', extension_ns='http://jabber.org/protocol/pubsub#errors')
                 elif am == 'whitelist':
                     if set((sjid.full, sjid.bare)).intersect(set(self.thoonk[node].config['pubsub#whitelist'])):
                         return 'subscribed'
                     else:
-                        iq.reply()
-                        iq.clear()
-                        iq['error']['condition'] = 'not-allowed'
-                        iq['error']['type'] = 'cancel'
-                        iq['error'].xml.append(ET('{http://jabber.org/protocol/pubsub#errors}closed-node'))
-                        iq.send()
+                        raise XMPPError(condition='not-allowed', etype='cancel', extension='closed-node', extension_ns='http://jabber.org/protocol/pubsub#errors')
+                elif am == 'authorize':
+                    self.add_pending(node, sjid)
+                    self.send_auth_request(node, sjid)
+                    iq.reply()
+                    iq.clear()
+                    sub = iq['pubsub']['subscripton']
+                    sub['node'] = node
+                    sub['jid'] = sjid
+                    sub['subscription'] = 'pending'
+                    iq.reply()
+                    return 'pending'
                 return 'subscribed'
 
         def handleSubscribe(self, iq):
@@ -122,17 +170,28 @@ class SleekPubsub2(object):
             jid = stanza['pubsub']['subscribe']['jid']
             config = stanza['pubsub']['subscribe']['options']
             if not jid: jid = iq['from'].bare
-            result = self.can_subscribe(iq, iq['from'], node, jid, config) 
 
-            if result in ('subscribed', 'pending', 'unconfigured'):
-                subid = uuid.uuid4().hex
-                iq.reply()
-                iq.clear()
-                sub = iq['pubsub']['subscripton']
-                sub['subid'] = subid
-                sub['node'] = node
-                sub['jid'] = jid
-                sub['subscription'] = result
+            if not self.node_exists(node):
+                logging.warning("Unable to subscribe %(subscriber)s to %(node)s due to %(condition)s" % {'condition': 'item-not-found','node': node, 'subscriber': jid})
+                raise XMPPError(condition='item-not-found', etype='cancel')
+            else:
+                node_config = self.get_config(node)
+                try:
+                    result = self.can_subscribe(iq, iq['from'], node, jid, config, node_config)
+                except XMPPError as e:
+                    logging.warning("Unable to subscribe %(subscriber)s to %(node)s due to %(condition)s + %(extension)s" % {'condition': e.condition, 'extension': e.extension, 'node': node, 'subscriber': jid})
+                    raise
+
+                if result == 'subscribed':
+                    subid = self.subscribe(node, sjid, config, node_config)
+                    iq.reply()
+                    iq.clear()
+                    sub = iq['pubsub']['subscripton']
+                    sub['subid'] = subid
+                    sub['node'] = node
+                    sub['jid'] = jid
+                    sub['subscription'] = result
+                    iq.send()
 
         def handleUnsubscribe(self, iq):
             pass
