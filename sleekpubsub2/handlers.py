@@ -30,6 +30,8 @@ class SleekPubsub2(object):
         self.xmpp.registerHandler(Callback('pubsub subscribe', StanzaPath('iq@type=set/pubsub/subscribe'), self.handleSubscribe)) 
         self.xmpp.registerHandler(Callback('pubsub unsubscribe', StanzaPath('iq@type=set/pubsub/unsubscribe'), self.handleUnsubscribe)) 
 
+        #self.xmpp.registerHandler(Callback('pubsub getsubs', StanzaPath('iq@type=get/pubsub/subscriptions'), self.handleGetSubscriptions))
+
         #TODO: registerHandler for handleSetAffilation, handleGetAffilation, handleGetSubscriptions
         
         self.xmpp.add_event_handler("got_offline", self.handleGotOffline)
@@ -62,6 +64,9 @@ class SleekPubsub2(object):
                 self.xmpp.send_raw(msg_str % subs[subid])
 
     def thoonk_retract(self, feed, id):
+        pass
+
+    def thoonk_create(feed):
         pass
 
     def thoonk_delete(self, feed):
