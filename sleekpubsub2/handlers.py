@@ -5,9 +5,11 @@ import uuid, json
 from xml.etree import cElementTree as ET
 import types
 import logging
+from sleekxmpp.exceptions import XMPPError
+from sleekxmpp.plugins.stanza_pubsub import EventItem, Subscription
 
 CONFIG_MAP = {}
-AFFILIATIONS = set('owner', 'publisher', 'publisher-only', 'member', 'none', 'outcast')
+AFFILIATIONS = set(('owner', 'publisher', 'publisher-only', 'member', 'none', 'outcast'))
 
 class SleekPubsub2(object):
 
@@ -30,11 +32,19 @@ class SleekPubsub2(object):
         self.xmpp.registerHandler(Callback('pubsub subscribe', StanzaPath('iq@type=set/pubsub/subscribe'), self.handleSubscribe)) 
         self.xmpp.registerHandler(Callback('pubsub unsubscribe', StanzaPath('iq@type=set/pubsub/unsubscribe'), self.handleUnsubscribe)) 
 
-        #self.xmpp.registerHandler(Callback('pubsub getsubs', StanzaPath('iq@type=get/pubsub/subscriptions'), self.handleGetSubscriptions))
+        self.xmpp.registerHandler(Callback('pubsub getsubs', StanzaPath('iq@type=get/pubsub/subscriptions'), self.handleGetSubscriptions))
 
         #TODO: registerHandler for handleSetAffilation, handleGetAffilation, handleGetSubscriptions
         
         self.xmpp.add_event_handler("got_offline", self.handleGotOffline)
+
+        keys = self.redis.keys('xmpp.sub_expires.presence.{*}')
+        for key in keys:
+            subs = self.redis.smembers(key)
+            for sub in subs:
+                node, subid = sub.split('\x00')
+                logging.info("Cleaning up stale subscription %s %s" % (node, subid))
+                self.unsubscribe(node, subid)
 
     def xmppconfig2thoonkconfig(self, node, config):
         "returns thoonk config dict"
@@ -45,7 +55,7 @@ class SleekPubsub2(object):
         pass
 
     def thoonk_publish(self, feed, item, id):
-        subs = self.redis.hgetall('xmpp.subs.jid.{%s}' % node)
+        subs = self.redis.hgetall('xmpp.subs.jid.{%s}' % feed)
         if subs:
             msg = self.xmpp.Message()
             msg['from'] = self.xmpp.boundjid
@@ -55,8 +65,11 @@ class SleekPubsub2(object):
             except:
                 payload = ET.Element('{http://andyet.net/protocol/sleekpubsub2-payload}payload')
                 payload.text = item
-            msg['pubsub_event']['item']['payload'] = payload
-            msg['pubsub_event']['item']['id'] = id
+            msg['pubsub_event']['items']['node'] = feed
+            item = EventItem()
+            item['payload'] = payload
+            item['id'] = id
+            msg['pubsub_event']['items'].append(item)
             msg_str = str(msg)
             #TODO get node config
             for subid in subs:
@@ -66,7 +79,7 @@ class SleekPubsub2(object):
     def thoonk_retract(self, feed, id):
         pass
 
-    def thoonk_create(feed):
+    def thoonk_create(self, feed):
         pass
 
     def thoonk_delete(self, feed):
@@ -77,7 +90,7 @@ class SleekPubsub2(object):
 
     def handleGotOffline(self, presence):
         subs = self.redis.smembers('xmpp.sub_expires.presence.{%s}' % presence['from'].full)
-        subs += self.redis.smembers('xmpp.sub_expires.presence.{%s}' % presence['from'].bare)
+        subs.union(self.redis.smembers('xmpp.sub_expires.presence.{%s}' % presence['from'].bare))
         if subs:
             for sub in subs:
                 node, subid = sub.split('\x00')
@@ -107,6 +120,9 @@ class SleekPubsub2(object):
 
     def handleGetDefaultConfig(self, iq):
         pass
+
+    def get_config(self, node):
+        return self.thoonk[node].config
 
     def is_admin(self, jid):
         return self.redis.sismember('xmpp.admin', jid)
@@ -142,21 +158,24 @@ class SleekPubsub2(object):
         return self.redis.smembers('xmpp.jid.subs.{%s}.{%s}' % (jid, node))
 
     def subscribe(self, node, jid, config, node_config, subid=None):
+        if config is None or not config:
+            config = {}
         if subid is None:
             subid = uuid.uuid4().hex
         if config.get('pubsub#expire', '') == 'presence' or node_config.get('pubsub#expire', '') == 'presence':
             self.redis.sadd('xmpp.sub_expires.presence.{%s}' % jid, "%s\x00%s" % (node, subid))
         self.redis.hset('xmpp.subs.jid.{%s}' % node, subid, jid)
         if config:
-            self.redis.hset('xmpp.subs.config.{%s}' % node, subid, json.sdump(config))
+            self.redis.hset('xmpp.subs.config.{%s}' % node, subid, json.dumps(config))
         self.redis.sadd('xmpp.jid.subs.{%s}.{%s}' % (jid, node), subid)
+        return subid
 
     def unsubscribe(self, node, subid):
         jid = self.redis.hget('xmpp.subs.jid.{%s}' % node, subid)
         self.redis.hdel('xmpp.subs.jid.{%s}' % node, subid)
         self.redis.hdel('xmpp.subs.config.{%s}' % node, subid)
-        self.redis.sdel('xmp.jid.subs.{%s}.{%s}' % (jid, node), subid)
-        self.redis.sdel('xmpp.sub_expires.presence.{%s}' % jid, "%s\x00%s" % (node, subid))
+        self.redis.srem('xmpp.jid.subs.{%s}.{%s}' % (jid, node), subid)
+        self.redis.srem('xmpp.sub_expires.presence.{%s}' % jid, "%s\x00%s" % (node, subid))
 
     def can_unsubscribe(self, iq, fjid, node, sjid, subid=None):
         if not self.node_exists(node):
@@ -185,9 +204,10 @@ class SleekPubsub2(object):
         elif self.is_pending(node, sjid):
             raise XMPPError(condition='not-authorized', etype='auth', extension='pending-subscription', extension_ns='http://jabber.org/protocol/pubsub#errors')
             #TODO: send another auth request?
-        elif (fjid != sjid and fjid != sjid.bare):
+        elif (fjid.full != sjid.full and fjid.bare != sjid.full):
+            logging.error("%s %s" % (fjid, sjid))
             raise XMPPError(condition='bad-request', etype='modify', extension='invalid-jid', extension_ns='http://jabber.org/protocol/pubsub#errors')
-        elif is_affiliation(node, sjid, 'outcast'):
+        elif self.is_affiliation(node, sjid, 'outcast'):
             raise XMPPError(condition='forbidden', etype='auth')
         else:
             am = node_config.get('pubsub#access_model', 'open')
@@ -227,8 +247,8 @@ class SleekPubsub2(object):
 
     def handleSubscribe(self, iq):
         node = iq['pubsub']['subscribe']['node']
-        jid = stanza['pubsub']['subscribe']['jid']
-        config = stanza['pubsub']['subscribe']['options']
+        jid = iq['pubsub']['subscribe']['jid']
+        config = iq['pubsub']['subscribe']['options']['options'].getValues()
         if not jid: jid = iq['from'].bare
 
         if not self.node_exists(node):
@@ -242,21 +262,20 @@ class SleekPubsub2(object):
                 logging.warning("Unable to subscribe %(subscriber)s to %(node)s due to %(condition)s + %(extension)s" % {'condition': e.condition, 'extension': e.extension, 'node': node, 'subscriber': jid})
                 raise
             if result:
-                subid = self.subscribe(node, sjid, config, node_config)
+                subid = self.subscribe(node, jid, config, node_config)
                 iq.reply()
                 iq.clear()
-                sub = iq['pubsub']['subscripton']
-                sub['subid'] = subid
-                sub['node'] = node
-                sub['jid'] = jid
-                sub['subscription'] = result
+                iq['pubsub']['subscription']['subid'] = subid
+                iq['pubsub']['subscription']['node'] = node
+                iq['pubsub']['subscription']['subscription'] = 'subscribed'
+                iq['pubsub']['subscription']['jid'] = str(jid)
                 iq.send()
 
     def handleUnsubscribe(self, iq):
         node = iq['pubsub']['unsubscribe']['node']
-        sjid = stanza['pubsub']['unsubscribe']['jid']
+        sjid = iq['pubsub']['unsubscribe']['jid']
         fjid = iq['from']
-        subid = stanza['pubsub']['unsubscribe'['subid']
+        subid = iq['pubsub']['unsubscribe']['subid']
         try:
             result = self.can_unsubscribe(iq, fjid, node, sjid, subid)
         except XMPPError as e:
@@ -275,4 +294,21 @@ class SleekPubsub2(object):
         pass
 
     def handleGetSubscriptions(self, iq):
-        pass
+        #TODO pending!!!!!
+        keys = self.redis.keys('xmpp.jid.subs.{%s*}.{*}' % iq['from'].bare)
+        print 'xmpp.jid.subs.{%s*}.{*}' % iq['from'].bare
+        print keys
+        iq.reply()
+        for key in keys:
+            fullsubs = self.redis.smembers(key)
+            data = key[15:]
+            jid, node = data.split('}.{')
+            node = node[:-1]
+            for subid in fullsubs:
+                sub = Subscription()
+                sub['jid'] = jid
+                sub['node'] = node
+                sub['subid'] = subid
+                sub['subscription'] = 'subscribed'
+                iq['pubsub']['subscriptions'].append(sub)
+        iq.send()
