@@ -1,4 +1,4 @@
-from thoonk.pubsub import Pubsub
+from thoonk import Thoonk
 from sleekpubsub2.interface import XMPPInterface
 from sleekxmpp.componentxmpp import ComponentXMPP
 from sleekpubsub2.handlers import SleekPubsub2
@@ -24,13 +24,13 @@ if __name__ == '__main__':
 
 
     print "loaded modules"
-    p = Pubsub(listen=True, db=10)
+    p = Thoonk(listen=True, db=10)
     print p.get_feeds()
     print p.feed_exists('test')
     print "pubsub"
     i = XMPPInterface()
     print "interface"
-    xmpp = ComponentXMPP('pubsub.recon', 'secreteating', '127.0.0.1', 5230)
+    xmpp = ComponentXMPP('pubsub.local', 'secreteating', '127.0.0.1', 5230)
     print "xmpp"
     sleekpubsub = SleekPubsub2(xmpp, p)
     i.add_sleekpubsub(sleekpubsub)
