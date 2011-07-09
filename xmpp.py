@@ -1,5 +1,4 @@
 from thoonk import Thoonk
-from sleekpubsub2.interface import XMPPInterface
 from sleekxmpp.componentxmpp import ComponentXMPP
 from sleekpubsub2.handlers import SleekPubsub2
 import ConfigParser as configparser
@@ -28,16 +27,13 @@ if __name__ == '__main__':
     print p.get_feeds()
     print p.feed_exists('test')
     print "pubsub"
-    i = XMPPInterface()
     print "interface"
-    xmpp = ComponentXMPP('pubsub.local', 'secreteating', '127.0.0.1', 5230)
+    xmpp = ComponentXMPP('pubsub.local', 'secreteating', '127.0.0.1', 5347)
     print "xmpp"
     sleekpubsub = SleekPubsub2(xmpp, p)
-    i.add_sleekpubsub(sleekpubsub)
     print "Sleekpubsub"
-    p.register_interface(i)
     print "registered"
     print xmpp.connect()
     print "connected"
-    xmpp.process()
+    xmpp.process(threaded=False)
     print "processed"

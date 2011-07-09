@@ -20,6 +20,10 @@ class SleekPubsub2(object):
         self.thoonk = thoonk
         self.default_config = default_config
         self.redis = thoonk.redis
+        self.thoonk.register_handler('publish_notice', self.thoonk_publish)
+        self.thoonk.register_handler('retract_notice', self.thoonk_retract)
+        self.thoonk.register_handler('create_notice', self.thoonk_create)
+        self.thoonk.register_handler('delete_notice', self.thoonk_delete)
         
         #self.xmpp.registerHandler(Callback('pubsub create', StanzaPath("iq@type=set/pubsub/create"), self.handleCreateNode)) 
         #self.xmpp.registerHandler(Callback('pubsub configure', StanzaPath("iq@type=set/pubsub_owner/configure"), self.handleConfigureNode))
