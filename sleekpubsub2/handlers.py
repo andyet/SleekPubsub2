@@ -15,11 +15,14 @@ class SleekPubsub2(object):
 
     CUSTOM_ACCESS_MODEL = {}
 
-    def __init__(self, xmpp, thoonk, default_config={}):
+    def __init__(self, xmpp, thoonk, default_config={}, features=[]):
         self.xmpp = xmpp
         self.thoonk = thoonk
         self.default_config = default_config
         self.redis = thoonk.redis
+
+        self.features = self.process_features(features)
+
         self.thoonk.register_handler('publish_notice', self.thoonk_publish)
         self.thoonk.register_handler('retract_notice', self.thoonk_retract)
         self.thoonk.register_handler('create_notice', self.thoonk_create)
@@ -28,7 +31,7 @@ class SleekPubsub2(object):
         #self.xmpp.registerHandler(Callback('pubsub create', StanzaPath("iq@type=set/pubsub/create"), self.handleCreateNode)) 
         #self.xmpp.registerHandler(Callback('pubsub configure', StanzaPath("iq@type=set/pubsub_owner/configure"), self.handleConfigureNode))
         #self.xmpp.registerHandler(Callback('pubsub delete', StanzaPath('iq@type=set/pubsub_owner/delete'), self.handleDeleteNode))
-        #self.xmpp.registerHandler(Callback('pubsub publish', StanzaPath("iq@type=set/pubsub/publish"), self.handlePublish)) 
+        self.xmpp.registerHandler(Callback('pubsub publish', StanzaPath("iq@type=set/pubsub/publish"), self.handlePublish)) 
         #self.xmpp.registerHandler(Callback('pubsub getitems', StanzaPath('iq@type=get/pubsub/items'), self.handleGetItems))
         #self.xmpp.registerHandler(Callback('pubsub delete item', StanzaPath('iq@type=set/pubsub/retract'), self.handleRetractItem))
         #self.xmpp.registerHandler(Callback('pubsub get configure', StanzaPath('iq@type=get/pubsub_owner/configure'), self.handleGetNodeConfig))
@@ -50,13 +53,30 @@ class SleekPubsub2(object):
                 logging.info("Cleaning up stale subscription %s %s" % (node, subid))
                 self.unsubscribe(node, subid)
 
+    def process_features(features):
+        #TODO: fill this out
+        #register feature discovery
+        #update default config
+        return features
+
     def xmppconfig2thoonkconfig(self, node, config):
         "returns thoonk config dict"
-        pass
+        if node is not None:
+            newconfig = copy.deepcopy(self.thoonk[node].config)
+        else:
+            newconfig = {'type': 'feed'}
+        newconfig['max_items'] = config['pubsub#max_items']
+        if 'xmpp_config' not in newconfig:
+            newconfig['xmpp_config'] = {}
+        newconfig['xmpp_config'].update(config)
+        return newconfig
 
-    def thoonkconfig2xmppconfig(self, node, config):
+    def thoonkconfig2xmppconfig(self, node):
         "returns xmpp config dict"
-        pass
+        config = copy.deepcopy(self.thoonk[node].config)
+        newconfig = config.get('xmpp_config', {'pubsub#node_type': 'leaf'})
+        newconfig['pubsub#max_items'] = config['max_items']
+        return newconfig
 
     def thoonk_publish(self, feed, item, id):
         subs = self.redis.hgetall('xmpp.subs.jid.{%s}' % feed)
@@ -111,7 +131,42 @@ class SleekPubsub2(object):
         pass
 
     def handlePublish(self, iq):
-        pass
+        fjid = iq['from'].bare
+        node = iq['pubsub']['publish']['node']
+        instant_node = False
+        auto_create = False
+        if not node:
+            if 'instant-nodes' not in self.features:
+                raise XMPPError(etype='modify', condition='not-acceptable', extention='nodeid-required', extention_ns='http://jabber.org/protocol/pubsub#errors')
+            node = uuid.uuid4().hex
+            instant_node = True
+        if instant_node or not self.node_exists(node):
+            if 'auto-create' in self.features:
+                #create config from default config merged with publish-options
+                config = self.xmpp.plugin['xep_0004'].make_form()
+                config['values'] = self.default_config
+                if 'publish_options' in iq['pubsub'].plugins:
+                    config.merge(iq['pubsub']['publish_options'])
+                config = self.xmppconfig2thoonkconfig(None, config['values'])
+                self.thoonk.create_feed(node, config)
+                self.set_affilation(node, fjid, 'owner')
+                auto_create = True
+            else:
+                raise XMPPError(condition='item-not-found', etype='cancel')
+        if not self.is_admin(fjid) and not self.is_affiliation(node, fjid, 'owner') and not self.is_affiliation(node, fjid, 'publisher') and not self.is_affiliation(node, fjid, 'publish-only'):
+            raise XMPPError(etype='auth', condition='forbidden')
+        #TODO: if too big, error payload-to-big 7.1.3.4
+        #TODO: if wrong ns or more than one root element in <item /> error invalid-payload 7.1.3.5
+        if not auto_create and 'publish_options' in iq['pubsub'].plugins:
+            options = iq['pubsub']['publish_options']['values']
+            existing_config = self.thoonkconfig2xmppconfig(node)
+            for key in options:
+                if options[key] != existing_config.get(key):
+                    raise XMPPError(condition='conflict', etype='cancel', extension='precondition-not-met', extension_ns='http://jabber.org/protocol/pubsub#errors')
+        item_id = iq['pubsub']['publish']['item']['id']
+        if not item_id:
+            item_id = uuid.uuid4().hex
+        self.thoonk.publish(node, iq['pubsub']['publish']['item'], id=item_id)
 
     def handleGetItems(self, iq):
         pass
